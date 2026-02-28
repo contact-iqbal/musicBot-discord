@@ -1,0 +1,12 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+.env
+.local
+*.db
+*.log
+cookies.txt
+bin/ffmpeg/
