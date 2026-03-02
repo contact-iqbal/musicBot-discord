@@ -82,6 +82,7 @@ class MusicBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix=";", intents=intents, help_command=None, *args, **kwargs)
+        self.campaign_rate = 0.35
         self.token_name = token_name
         self.song_queues = {}
         self.autoplay_status = {}
@@ -93,6 +94,8 @@ class MusicBot(commands.Bot):
         self.active_owners = {}
         self.active_channels = {}
         self.last_command_channels = {}
+        self.empty_vc_tasks = {}
+        self.empty_vc_warned = {}
 
     async def setup_hook(self):
         self.add_check(self.coordinator_check)
@@ -247,6 +250,18 @@ class MusicCog(commands.Cog):
             if ch:
                 return ch
         return source_channel
+    
+    async def maybe_send_campaign(self, channel):
+        if random.random() < self.bot.campaign_rate:
+            emb = discord.Embed(
+                description="thank you for using our services!\n\n**Did you know?**\nThese bots are free for everyone. If you’ve enjoyed using them, consider supporting our developers with a [donation](https://saweria.co/Michenical) to help us continue building great tools.",
+                color=discord.Color(0xA3EB23),
+            )
+            emb.set_image(url="https://files.catbox.moe/7bd55o.png")
+            try:
+                await channel.send(embed=emb)
+            except Exception:
+                pass
 
     def cancel_idle(self, guild_id):
         guild_id = str(guild_id)
@@ -265,6 +280,45 @@ class MusicCog(commands.Cog):
                     await voice_client.disconnect()
         self.bot.idle_tasks[guild_id] = asyncio.create_task(_idle())
 
+    def cancel_empty_vc_watch(self, guild_id):
+        guild_id = str(guild_id)
+        task = self.bot.empty_vc_tasks.get(guild_id)
+        if task:
+            task.cancel()
+            self.bot.empty_vc_tasks.pop(guild_id, None)
+        self.bot.empty_vc_warned[guild_id] = False
+
+    async def schedule_empty_vc_watch(self, voice_client, guild_id, source_channel):
+        guild_id = str(guild_id)
+        self.cancel_empty_vc_watch(guild_id)
+        async def _watch():
+            await asyncio.sleep(180)
+            vc = voice_client.channel if voice_client else None
+            if vc:
+                has_human = any(not m.bot for m in vc.members)
+                if not has_human:
+                    target_channel = self.resolve_message_channel(source_channel)
+                    try:
+                        emb = discord.Embed(title="Warning", description="No users in the voice channel for 3 minutes. Disconnecting in 2 minutes if still empty.", color=discord.Color(0xFFFF00))
+                        await target_channel.send(embed=emb)
+                    except Exception:
+                        pass
+                    self.bot.empty_vc_warned[guild_id] = True
+                    await asyncio.sleep(120)
+                    vc = voice_client.channel if voice_client else None
+                    if vc:
+                        has_human = any(not m.bot for m in vc.members)
+                        if not has_human:
+                            target_channel = self.resolve_message_channel(source_channel)
+                            try:
+                                emb2 = discord.Embed(description="👋 Disconnected: no users in the voice channel for 5 minutes", color=discord.Color(0xFF0000))
+                                await target_channel.send(embed=emb2)
+                            except Exception:
+                                pass
+                            await self.maybe_send_campaign(target_channel)
+                            if voice_client and voice_client.is_connected():
+                                await voice_client.disconnect()
+        self.bot.empty_vc_tasks[guild_id] = asyncio.create_task(_watch())
     def clear_guild_data(self, guild_id):
         guild_id_str = str(guild_id)
         self.bot.song_queues.pop(guild_id_str, None)
@@ -314,6 +368,16 @@ class MusicCog(commands.Cog):
                 else:
                     # No humans left in the voice channel, bot should probably leave? handled by idle check
                     pass
+        vc = member.guild.voice_client
+        if vc and vc.channel:
+            has_human = any(not m.bot for m in vc.channel.members)
+            if has_human:
+                self.cancel_empty_vc_watch(member.guild.id)
+            else:
+                guild_id_str = str(member.guild.id)
+                ch_id = self.bot.last_command_channels.get(guild_id_str) or self.bot.active_channels.get(guild_id_str)
+                src_ch = member.guild.get_channel(ch_id) if ch_id else None
+                await self.schedule_empty_vc_watch(vc, member.guild.id, src_ch or vc.channel)
 
     def check_ownership(self, ctx):
         guild_id = str(ctx.guild.id)
@@ -684,10 +748,12 @@ class MusicCog(commands.Cog):
             COORDINATOR.release_vc(vc_id)
         self.clear_guild_data(ctx.guild.id)
         target_channel = self.resolve_message_channel(ctx.channel)
+        emb = discord.Embed(title="Disconnected", description="Left the voice channel.", color=discord.Color(0x2F3136))
         try:
             await target_channel.send(embed=emb)
         except Exception:
             await ctx.send(embed=emb)
+        await self.maybe_send_campaign(target_channel)
 
     @commands.hybrid_command(name="help", description="Show all available commands and their descriptions.")
     async def help(self, ctx: commands.Context):
@@ -796,7 +862,13 @@ class MusicCog(commands.Cog):
                 "options": "-vn -c:a libopus -b:a 96k",
             }
 
-            source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg\\ffmpeg.exe")
+            try:
+                if os.name == "nt" and os.path.exists("bin\\ffmpeg\\ffmpeg.exe"):
+                    source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="bin\\ffmpeg\\ffmpeg.exe")
+                else:
+                    source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options, executable="ffmpeg")
+            except Exception:
+                source = discord.FFmpegOpusAudio(audio_url, **ffmpeg_options)
 
             def after_play(error):
                 if error:
@@ -818,6 +890,7 @@ class MusicCog(commands.Cog):
                     await target_channel.send(embed=emb)
                 except Exception:
                     await channel.send(embed=emb)
+            await self.maybe_send_campaign(self.resolve_message_channel(channel))
             self.cancel_idle(guild_id)
         else:
             if self.bot.autoplay_status.get(guild_id):
