@@ -76,14 +76,15 @@ async def search_ytdlp_async(query, ydl_opts):
 
 def _extract(query, ydl_opts):
     opts = dict(ydl_opts or {})
-    runtimes = []
-    if shutil.which("node"):
-        runtimes.append("node")
-    if shutil.which("deno"):
-        runtimes.append("deno")
-    if runtimes:
-        opts["js_runtime"] = runtimes
-        opts["js_runtimes"] = runtimes
+    js_runtimes = {}
+    node_path = shutil.which("node")
+    deno_path = shutil.which("deno")
+    if deno_path:
+        js_runtimes["deno"] = {"path": deno_path}
+    if node_path:
+        js_runtimes["node"] = {"path": node_path}
+    if js_runtimes:
+        opts["js_runtimes"] = js_runtimes
     extractor_args = opts.get("extractor_args", {})
     yt_args = extractor_args.get("youtube", {})
     clients = yt_args.get("player_client", [])
