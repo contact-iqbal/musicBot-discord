@@ -8,6 +8,7 @@ from collections import deque
 import asyncio
 import random
 import re
+import shutil
 
 # Environment variables for tokens and other sensitive data
 load_dotenv()
@@ -74,7 +75,23 @@ async def search_ytdlp_async(query, ydl_opts):
     return await loop.run_in_executor(None, lambda: _extract(query, ydl_opts))
 
 def _extract(query, ydl_opts):
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    opts = dict(ydl_opts or {})
+    runtimes = []
+    if shutil.which("node"):
+        runtimes.append("node")
+    if shutil.which("deno"):
+        runtimes.append("deno")
+    if runtimes:
+        opts["js_runtime"] = runtimes
+        opts["js_runtimes"] = runtimes
+    extractor_args = opts.get("extractor_args", {})
+    yt_args = extractor_args.get("youtube", {})
+    clients = yt_args.get("player_client", [])
+    if not clients:
+        yt_args["player_client"] = ["android", "android_vr", "web"]
+    extractor_args["youtube"] = yt_args
+    opts["extractor_args"] = extractor_args
+    with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(query, download=False)
 
 class MusicBot(commands.Bot):
