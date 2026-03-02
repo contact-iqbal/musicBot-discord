@@ -82,7 +82,7 @@ class MusicBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix=";", intents=intents, help_command=None, *args, **kwargs)
-        self.campaign_rate = 0.35
+        self.campaign_rate = 0.25
         self.token_name = token_name
         self.song_queues = {}
         self.autoplay_status = {}
@@ -897,56 +897,57 @@ class MusicCog(commands.Cog):
                 seed = self.bot.last_played.get(guild_id, {})
                 seed_id = seed.get("id")
                 if seed_id:
-                    ydl_options = {
+                    ydl_radio_flat = {
                         "format": "bestaudio/best",
                         "noplaylist": False,
                         "extract_flat": "in_playlist",
                         "youtube_include_dash_manifest": False,
                         "youtube_include_hls_manifest": False,
+                        "playlist_items": "1-20",
+                    }
+                    ydl_resolve = {
+                        "format": "bestaudio/best",
+                        "noplaylist": True,
+                        "youtube_include_dash_manifest": False,
+                        "youtube_include_hls_manifest": False,
                     }
                     radio_url = f"https://www.youtube.com/watch?v={seed_id}&list=RD{seed_id}"
-                    radio = await search_ytdlp_async(radio_url, ydl_options)
+                    radio = await search_ytdlp_async(radio_url, ydl_radio_flat)
                     entries = radio.get("entries", []) if radio else []
-                    patterns = ["live", "tutorial", "podcast"]
-                    filtered = []
                     guild_history = self.bot.play_history.get(guild_id, [])
-                    
+                    candidates = []
                     for e in entries:
                         eid = e.get("id")
                         etitle = (e.get("title") or "")
-                        etitle_lower = etitle.lower()
-                        dur = e.get("duration") or 0
                         if not eid or eid == seed_id:
                             continue
                         if normalize_title(etitle) in guild_history:
                             continue
-                        if any(p in etitle_lower for p in patterns):
-                            continue
-                        if "official video" in etitle_lower and dur > 900:
-                            continue
-                        filtered.append(e)
-                    
-                    if filtered:
-                        choice = random.choice(filtered[:10])
+                        candidates.append(e)
+                    choice = random.choice(candidates[:10]) if candidates else None
+                    if choice:
                         cid = choice.get("id")
-                        curl = choice.get("url")
-                        ctitle = choice.get("title", "Untitled")
-                        if not curl or "videoplayback" not in str(curl):
-                            info = await search_ytdlp_async(f"https://www.youtube.com/watch?v={cid}", ydl_options)
-                            thumb = (info or {}).get("thumbnail") or (info or {}).get("thumbnails", [{}])[0].get("url")
+                        info = await search_ytdlp_async(f"https://www.youtube.com/watch?v={cid}", ydl_resolve)
+                        curl = (info or {}).get("url")
+                        ctitle = (info or {}).get("title") or choice.get("title", "Untitled")
+                        thumb = (info or {}).get("thumbnail") or (info or {}).get("thumbnails", [{}])[0].get("url")
+                        if curl and cid:
                             self.bot.song_queues[guild_id].append((curl, ctitle, cid, thumb))
                             await self.play_next_song(voice_client, guild_id, channel)
                             return
-                    f_results = await search_ytdlp_async("ytsearch1: " + (seed.get("title") or ""), ydl_options)
+                    f_results = await search_ytdlp_async("ytsearch20: " + (seed.get("title") or ""), ydl_radio_flat)
                     f_tracks = f_results.get("entries", []) if f_results else []
-                    if f_tracks:
-                        f_item = f_tracks[0]
+                    for f_item in f_tracks[:5]:
                         fid = f_item.get("id")
-                        if not any(p in (f_item.get("title") or "").lower() for p in patterns) and fid and fid != seed_id:
-                            f_thumb = f_item.get("thumbnail") or (f_item.get("thumbnails") or [{}])[0].get("url")
-                            self.bot.song_queues[guild_id].append((f_item["url"], f_item.get("title", "Untitled"), fid, f_thumb))
-                            await self.play_next_song(voice_client, guild_id, channel)
-                            return
+                        ftitle = (f_item.get("title") or "Untitled")
+                        if fid and fid != seed_id and normalize_title(ftitle) not in guild_history:
+                            info = await search_ytdlp_async(f"https://www.youtube.com/watch?v={fid}", ydl_resolve)
+                            curl = (info or {}).get("url")
+                            thumb = (info or {}).get("thumbnail") or (info or {}).get("thumbnails", [{}])[0].get("url")
+                            if curl:
+                                self.bot.song_queues[guild_id].append((curl, (info or {}).get("title", ftitle), fid, thumb))
+                                await self.play_next_song(voice_client, guild_id, channel)
+                                return
             emb = discord.Embed(title="No More Tracks", description="There are no more tracks.", color=discord.Color(0x2F3136))
             target_channel = self.resolve_message_channel(channel)
             try:
